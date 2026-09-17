@@ -1,10 +1,13 @@
 package com.example.datamobtech
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import org.junit.Assert.assertEquals
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -18,11 +21,12 @@ import kotlin.time.Duration.Companion.milliseconds
 class ParallelMapOrderedTest {
 
     @Test(expected = IllegalArgumentException::class)
-    fun `deve lancar IllegalArgumentException quando concurrency for menor ou igual a zero`() = runTest {
-        emptyFlow<Int>()
-            .parallelMapOrdered(concurrency = 0) { it * 2 }
-            .toList()
-    }
+    fun `deve lancar IllegalArgumentException quando concurrency for menor ou igual a zero`() =
+        runTest {
+            emptyFlow<Int>()
+                .parallelMapOrdered(concurrency = 0) { it * 2 }
+                .toList()
+        }
 
     @Test
     fun `deve emitir os itens transformados na ordem correta do upstream`() = runTest {
@@ -98,32 +102,73 @@ class ParallelMapOrderedTest {
     }
 
     @Test
-    fun `deve falhar rapido cancelando tarefas em andamento e propagando a excecao original`() = runTest {
-        class CustomDomainException(message: String) : RuntimeException(message)
+    fun `deve falhar rapido cancelando tarefas em andamento e propagando a excecao original`() =
+        runTest {
+            class CustomDomainException(message: String) : RuntimeException(message)
 
-        val subsequentItemRanUntilEnd = AtomicBoolean(false)
+            val subsequentItemRanUntilEnd = AtomicBoolean(false)
 
-        try {
-            (1..20).asFlow()
-                .parallelMapOrdered(concurrency = 4) { item ->
-                    if (item == 3) {
-                        throw CustomDomainException("Erro no item 3")
+            try {
+                (1..20).asFlow()
+                    .parallelMapOrdered(concurrency = 4) { item ->
+                        if (item == 3) {
+                            throw CustomDomainException("Erro no item 3")
+                        }
+                        if (item > 3) {
+                            delay(200.milliseconds) // Dá tempo para o cancelamento interromper este worker
+                            subsequentItemRanUntilEnd.set(true)
+                        }
+                        item
                     }
-                    if (item > 3) {
-                        delay(200.milliseconds) // Dá tempo para o cancelamento interromper este worker
-                        subsequentItemRanUntilEnd.set(true)
-                    }
-                    item
-                }
-                .toList()
-            org.junit.Assert.fail("Deveria ter propagado a excecao CustomDomainException")
-        } catch (e: CustomDomainException) {
-            assertEquals("Erro critico no item 3", e.message)
+                    .toList()
+                org.junit.Assert.fail("Deveria ter propagado a excecao CustomDomainException")
+            } catch (e: CustomDomainException) {
+                assertEquals("Erro critico no item 3", e.message)
+            }
+
+            assertTrue(
+                "Itens posteriores nao devem rodar ate o fim apos o erro",
+                !subsequentItemRanUntilEnd.get()
+            )
         }
 
-        assertTrue(
-            "Itens posteriores nao devem rodar ate o fim apos o erro",
-            !subsequentItemRanUntilEnd.get()
-        )
-    }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `cancelamento do coletor deve interromper transformacoes em andamento imediatamente`() =
+        runTest {
+            val transformStarted = AtomicBoolean(false)
+            val transformCompleted = AtomicBoolean(false)
+
+            val infiniteFlow = flow {
+                var i = 0
+                while (true) {
+                    emit(i++)
+                }
+            }
+
+            val job: Job = launch {
+                infiniteFlow
+                    .parallelMapOrdered(concurrency = 2) { item ->
+                        transformStarted.set(true)
+                        delay(10_000.milliseconds) // Simula requisição de rede em curso
+                        transformCompleted.set(true)
+                        item
+                    }
+                    .collect { }
+            }
+
+            // Avança o tempo virtual apenas para garantir que a transformação começou
+            testScheduler.advanceTimeBy(100)
+            assertTrue("Transformacao deveria ter iniciado", transformStarted.get())
+
+            // Cancela a coroutine do coletor
+            job.cancel()
+            testScheduler.advanceUntilIdle()
+
+            // Como o cancelamento foi acionado, o transform suspenso em delay deve ser abortado
+            assertTrue(
+                "Nenhum transform deve rodar ate o fim apos o cancelamento do coletor",
+                !transformCompleted.get()
+            )
+        }
 }
