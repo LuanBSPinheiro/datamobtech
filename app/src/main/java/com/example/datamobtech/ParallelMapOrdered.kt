@@ -6,6 +6,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 fun <T, R> Flow<T>.parallelMapOrdered(
     concurrency: Int,
@@ -14,10 +16,9 @@ fun <T, R> Flow<T>.parallelMapOrdered(
     require(concurrency > 0) { "concurrency must be > 0, but was $concurrency" }
 
     return channelFlow {
-        // Fila que armazena os Deferreds rigorosamente na ordem do upstream
+        val semaphore = Semaphore(concurrency)
         val queue = Channel<Deferred<R>>(Channel.BUFFERED)
 
-        // Consumidor sequencial que aguarda cada Deferred na ordem e emite
         val consumerJob = async(start = CoroutineStart.UNDISPATCHED) {
             for (deferred in queue) {
                 send(deferred.await())
@@ -27,7 +28,9 @@ fun <T, R> Flow<T>.parallelMapOrdered(
         try {
             collect { item ->
                 val deferred = async {
-                    transform(item)
+                    semaphore.withPermit {
+                        transform(item)
+                    }
                 }
                 queue.send(deferred)
             }

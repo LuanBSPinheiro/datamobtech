@@ -1,11 +1,15 @@
 package com.example.datamobtech
 
+import kotlinx.coroutines.delay
 import org.junit.Assert.assertEquals
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.time.Duration.Companion.milliseconds
 
 class ParallelMapOrderedTest {
 
@@ -25,5 +29,31 @@ class ParallelMapOrderedTest {
             .toList()
 
         assertEquals(listOf(10, 20, 30, 40, 50), result)
+    }
+
+    @Test
+    fun `nunca deve exceder o limite de concorrencia configurado`() = runTest {
+        val concurrencyLimit = 3
+        val activeWorkers = AtomicInteger(0)
+        val maxObservedConcurrency = AtomicInteger(0)
+
+        val result = (1..20).asFlow()
+            .parallelMapOrdered(concurrency = concurrencyLimit) { item ->
+                val current = activeWorkers.incrementAndGet()
+                maxObservedConcurrency.updateAndGet { max -> maxOf(max, current) }
+
+                // Simula trabalho assíncrono para dar tempo de outras coroutines entrarem
+                delay(50.milliseconds)
+
+                activeWorkers.decrementAndGet()
+                item
+            }
+            .toList()
+
+        assertEquals((1..20).toList(), result)
+        assertTrue(
+            "Concorrência observada (${maxObservedConcurrency.get()}) não pode ultrapassar o limite de $concurrencyLimit",
+            maxObservedConcurrency.get() <= concurrencyLimit
+        )
     }
 }
