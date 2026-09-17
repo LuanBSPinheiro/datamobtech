@@ -16,6 +16,7 @@ import org.junit.Test
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 import kotlin.time.Duration.Companion.milliseconds
 
 class ParallelMapOrderedTest {
@@ -171,4 +172,37 @@ class ParallelMapOrderedTest {
                 !transformCompleted.get()
             )
         }
+
+    @Test
+    fun `requisito 5 - teste obrigatorio com 1000 itens, delay aleatorio e concorrencia limitada a 8`() = runTest {
+        val totalItems = 1000
+        val concurrencyLimit = 8
+        val activeWorkers = AtomicInteger(0)
+        val maxObservedConcurrency = AtomicInteger(0)
+
+        val result = (1..totalItems).asFlow()
+            .parallelMapOrdered(concurrency = concurrencyLimit) { value ->
+                val current = activeWorkers.incrementAndGet()
+                maxObservedConcurrency.updateAndGet { max -> maxOf(max, current) }
+
+                // Delay randômico de 1 a 10ms conforme especificado
+                delay(Random.nextLong(1, 11).milliseconds)
+
+                activeWorkers.decrementAndGet()
+                value * 2
+            }
+            .toList()
+
+        val expected = (1..totalItems).map { it * 2 }
+
+        assertEquals("A ordem dos elementos deve ser estritamente preservada de 2 a 2000", expected, result)
+        assertTrue(
+            "Concorrência máxima observada (${maxObservedConcurrency.get()}) nunca pode exceder$concurrencyLimit",
+            maxObservedConcurrency.get() <= concurrencyLimit
+        )
+        assertTrue(
+            "Deve ter havido paralelismo efetivo (maior que 1)",
+            maxObservedConcurrency.get() > 1
+        )
+    }
 }
