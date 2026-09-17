@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -94,5 +95,35 @@ class ParallelMapOrderedTest {
         slowItemGate.complete(Unit)
         testScheduler.advanceUntilIdle()
         job.join()
+    }
+
+    @Test
+    fun `deve falhar rapido cancelando tarefas em andamento e propagando a excecao original`() = runTest {
+        class CustomDomainException(message: String) : RuntimeException(message)
+
+        val subsequentItemRanUntilEnd = AtomicBoolean(false)
+
+        try {
+            (1..20).asFlow()
+                .parallelMapOrdered(concurrency = 4) { item ->
+                    if (item == 3) {
+                        throw CustomDomainException("Erro no item 3")
+                    }
+                    if (item > 3) {
+                        delay(200.milliseconds) // Dá tempo para o cancelamento interromper este worker
+                        subsequentItemRanUntilEnd.set(true)
+                    }
+                    item
+                }
+                .toList()
+            org.junit.Assert.fail("Deveria ter propagado a excecao CustomDomainException")
+        } catch (e: CustomDomainException) {
+            assertEquals("Erro critico no item 3", e.message)
+        }
+
+        assertTrue(
+            "Itens posteriores nao devem rodar ate o fim apos o erro",
+            !subsequentItemRanUntilEnd.get()
+        )
     }
 }
